@@ -161,6 +161,53 @@ splits standard CFG forwards to reduce peak memory. Measure both profiles on
 the target card with `benchmarks/run_benchmark.py` before choosing production
 defaults.
 
+### Local CUDA smoke tests
+
+The regular test suite does not load the multi-gigabyte model. Run one CUDA
+mode per process to verify that the requested loader was actually selected and
+that a real generation completes:
+
+```bash
+OMNIVOICE_RUN_CUDA_SMOKE=1 \
+OMNIVOICE_CUDA_SMOKE_MODE=low-vram \
+uv run pytest -q -s tests/test_cuda_smoke.py
+```
+
+Supported `OMNIVOICE_CUDA_SMOKE_MODE` values are `standard`, `low-vram`,
+`flashinfer`, and `flashinfer-graph`. The test prints allocated/reserved/peak
+VRAM and graph-cache entries. FlashInfer modes require the optional FlashInfer
+dependencies; graph mode additionally requires a compatible JIT compiler.
+
+To exercise a cold custom-voice reference, provide real speech and its exact
+transcript rather than the bundled test tone:
+
+```bash
+OMNIVOICE_RUN_CUDA_SMOKE=1 \
+OMNIVOICE_CUDA_SMOKE_MODE=low-vram \
+OMNIVOICE_CUDA_SMOKE_REF_AUDIO=/path/to/speech.wav \
+OMNIVOICE_CUDA_SMOKE_REF_TEXT="The exact words spoken in the reference." \
+uv run pytest -q -s tests/test_cuda_smoke.py
+```
+
+To measure the normal production path using an already-saved clone embedding,
+add `OMNIVOICE_CUDA_SMOKE_SAVED_PROMPT=1`. The WAV and `.tokens.pt` sidecar
+must pass the server's source metadata and transcript validation:
+
+```bash
+OMNIVOICE_RUN_CUDA_SMOKE=1 \
+OMNIVOICE_CUDA_SMOKE_MODE=low-vram \
+OMNIVOICE_CUDA_SMOKE_SAVED_PROMPT=1 \
+OMNIVOICE_CUDA_SMOKE_REF_AUDIO=/path/to/speech.wav \
+OMNIVOICE_CUDA_SMOKE_REF_TEXT="The exact words spoken in the reference." \
+uv run pytest -q -s tests/test_cuda_smoke.py
+```
+
+This warm-sidecar case does not load the reference encoder. It is the correct
+case for comparing steady-state standard and low-VRAM clone generation.
+
+Run each mode in a fresh process. This prevents one loaded model or CUDA graph
+pool from affecting the next mode's measurements.
+
 Static loaded model footprint on CUDA:
 
 - Core OmniVoice model params: `~1168.4 MB`

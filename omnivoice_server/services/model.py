@@ -121,7 +121,18 @@ class ModelService:
                         model = None
                     if model is not None:
                         try:
-                            test = model.generate(text="test", num_step=4)
+                            # Keep this probe focused on the decoder/model path.
+                            # Very short text with four denoising steps can produce
+                            # an empty waveform, and post-processing then raises
+                            # unrelated audio-conversion errors (for example
+                            # ``Tensor`` has no ``astype``).  That false negative
+                            # silently replaces the decoder-only loader with the
+                            # full model and defeats low-VRAM startup.
+                            test = model.generate(
+                                text="This is a compatibility test sentence.",
+                                num_step=8,
+                                postprocess_output=False,
+                            )
                         except Exception as exc:
                             logger.warning(
                                 "Low-VRAM model compatibility test failed; falling back "
@@ -133,6 +144,8 @@ class ModelService:
                             self._low_vram_dtype = None
                             del model
                             gc.collect()
+                            if self.cfg.device == "cuda" and torch.cuda.is_available():
+                                torch.cuda.empty_cache()
                             model = None
                         else:
                             if self._has_nan(test):
@@ -145,6 +158,8 @@ class ModelService:
                                 self._low_vram_dtype = None
                                 del model
                                 gc.collect()
+                                if self.cfg.device == "cuda" and torch.cuda.is_available():
+                                    torch.cuda.empty_cache()
                                 model = None
                             else:
                                 self._apply_flashinfer(model)
