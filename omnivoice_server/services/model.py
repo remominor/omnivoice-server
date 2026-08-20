@@ -75,7 +75,7 @@ class ModelService:
         self._low_vram_active = False
         self._low_vram_tokenizer_path: str | None = None
         self._low_vram_dtype: torch.dtype | None = None
-        self._faster_whisper_model = None
+        self._faster_whisper_model: Any | None = None
         self._asr_lock = threading.Lock()
         self._flashinfer_active = False
 
@@ -229,7 +229,11 @@ class ModelService:
         try:
             from ..vendor.omnivoice_flashinfer_012 import apply_flashinfer
 
-            apply_flashinfer(model, enable_cuda_graph=self.cfg.flashinfer_cuda_graph)
+            apply_flashinfer(
+                model,
+                enable_cuda_graph=self.cfg.flashinfer_cuda_graph,
+                cuda_graph_max_shapes=self.cfg.flashinfer_cuda_graph_max_shapes,
+            )
             logger.info(
                 "FlashInfer acceleration enabled%s",
                 " with CUDA graphs" if self.cfg.flashinfer_cuda_graph else "",
@@ -275,7 +279,7 @@ class ModelService:
                     device=device,
                     compute_type=compute_type,
                 )
-            kwargs = {"beam_size": self.cfg.asr_beam_size}
+            kwargs: dict[str, Any] = {"beam_size": self.cfg.asr_beam_size}
             if self.cfg.asr_language:
                 kwargs["language"] = self.cfg.asr_language
             segments, _ = self._faster_whisper_model.transcribe(ref_audio_path, **kwargs)
@@ -393,6 +397,32 @@ class ModelService:
 
         return prompt
 
+    def create_voice_clone_prompt(
+        self,
+        ref_audio_path: str,
+        ref_text: str | None,
+        preprocess_prompt: bool | None = None,
+    ):
+        """Create one request-scoped prompt for an uncached clone reference.
+
+        Streaming requests without a stored profile do not have a stable cache
+        key. Prepare the prompt once before chunking so each chunk uses the
+        same reference tokens and RMS value.
+        """
+        with self._voice_encoder_lock:
+            self._restore_voice_encoder()
+            try:
+                kwargs: dict[str, Any] = {
+                    "ref_audio": ref_audio_path,
+                    "ref_text": ref_text,
+                }
+                if preprocess_prompt is not None:
+                    kwargs["preprocess_prompt"] = preprocess_prompt
+                prompt = self.model.create_voice_clone_prompt(**kwargs)
+            finally:
+                self._offload_voice_encoder()
+        return self._move_prompt_to_cpu(prompt)
+
     def invalidate_voice_clone_prompt(self, profile_id: str | None = None) -> None:
         with self._prompt_cache_lock:
             if profile_id is None:
@@ -430,6 +460,11 @@ class ModelService:
 
         snapshot["prompt_cache_cuda_mb"] = round(cache_cuda_bytes / 1024 / 1024, 3)
         snapshot["prompt_cache_cpu_mb"] = round(cache_cpu_bytes / 1024 / 1024, 3)
+        graph_cache = getattr(self._model, "_fi_graph_cache", None)
+        snapshot["flashinfer_graph_cache_entries"] = len(graph_cache or {})
+        snapshot["flashinfer_graph_cache_max_shapes"] = int(
+            getattr(self._model, "_fi_graph_cache_max_shapes", 0) or 0
+        )
         return snapshot
 
     @staticmethod

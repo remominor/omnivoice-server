@@ -133,6 +133,12 @@ class Settings(BaseSettings):
         default=False,
         description="Use FlashInfer CUDA graphs for fixed-shape, single-request decoding.",
     )
+    flashinfer_cuda_graph_max_shapes: int = Field(
+        default=4,
+        ge=1,
+        le=32,
+        description="Maximum number of FlashInfer CUDA-graph shapes retained in VRAM.",
+    )
     split_cfg_batch: bool = Field(
         default=False,
         description=(
@@ -209,6 +215,14 @@ class Settings(BaseSettings):
     stream_chunk_max_chars: int = Field(
         default=400,
         description="Max chars per sentence chunk when streaming",
+    )
+    stream_chunk_min_chars: int = Field(
+        default=80,
+        ge=0,
+        description=(
+            "Preferred minimum chars for clone streaming chunks; adjacent "
+            "sentences are merged when they fit"
+        ),
     )
 
     max_ref_audio_mb: int = Field(

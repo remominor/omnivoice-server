@@ -38,6 +38,12 @@ sidecar is invalidated when the source mtime/size or requested reference text
 changes; legacy sidecars are accepted only when newer than the source audio.
 Malformed, incomplete, or incompatible sidecars are ignored and regenerated.
 
+Built-in design voices do not require the omitted reference-encoder modules.
+OmniVoice's native long-form path uses generated audio-token tensors from its
+first chunk as the reference for later chunks, so built-in voices remain
+available in low-VRAM mode. Only uploaded-reference cloning needs the temporary
+encoder-restore lifecycle described above.
+
 This mode reduces steady-state VRAM by the size of the omitted tokenizer
 encoder weights. A cold reference temporarily pays the encoder allocation and
 may therefore peak above startup; the exact savings and peak depend on the
@@ -80,6 +86,20 @@ private model patch does not match the installed runtime.
 FlashInfer mode automatically serializes synthesis requests because its packed
 attention context and CUDA-graph state are model-global; standard mode still
 uses the configured `max_concurrent` value.
+
+CUDA graphs retain static tensors and private CUDA memory pools per packed
+sequence shape. The server bounds this cache to four shapes by default and
+evicts older shapes with `OMNIVOICE_FLASHINFER_CUDA_GRAPH_MAX_SHAPES` or
+`--flashinfer-cuda-graph-max-shapes`. This is important for workloads that
+exercise many voice/text lengths; without a bound, shape diversity can consume
+the remaining VRAM even though prompt tokens are CPU-resident.
+
+For additional safety, CUDA-graph capture is disabled automatically for
+reference-conditioned requests, including uploaded voice clones. Reference
+lengths vary by voice and can create graph-private pools that are not fully
+reclaimed after eviction on all PyTorch/CUDA combinations. These requests
+still use FlashInfer's eager packed-attention path. CUDA graphs remain enabled
+for reference-free design/auto requests.
 
 For the standard (non-FlashInfer) path, `--split-cfg-batch` is an additional
 opt-in memory fallback. It runs the conditional and unconditional CFG branches
