@@ -255,7 +255,8 @@ classifiers = [
 ]
 
 dependencies = [
-    "omnivoice>=0.1.0,<0.2.0",  # Pin to 0.1.x to avoid breaking changes
+    "omnivoice==0.2.1",  # Private low-VRAM/FlashInfer integrations are version-guarded
+    "transformers==5.3.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "python-multipart>=0.0.12",

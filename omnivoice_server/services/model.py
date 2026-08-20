@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import hashlib
 import inspect
 import logging
 import threading
@@ -108,7 +109,13 @@ class ModelService:
                         self._low_vram_active = True
                         self._low_vram_tokenizer_path = model._omnivoice_server_tokenizer_path
                         self._low_vram_dtype = dtype
-                        logger.info("Loaded vendored OmniVoice 0.1.2 decoder-only tokenizer")
+                        self._remember_audio_tokenizer_device(model)
+                        self._ensure_audio_tokenizer_input_dtype(model)
+                        from ..omnivoice_compat import installed_version
+
+                        logger.info(
+                            "Loaded OmniVoice %s decoder-only tokenizer", installed_version()
+                        )
                     except Exception as exc:
                         logger.warning(
                             "Low-VRAM OmniVoice loader unavailable; falling back to standard "
@@ -166,6 +173,7 @@ class ModelService:
                                 self._apply_split_cfg(model)
                                 self._instrument_model(model)
                                 self._remember_audio_tokenizer_device(model)
+                                self._ensure_audio_tokenizer_input_dtype(model)
                                 self._model = model
                                 self._memory_summary = self._compute_model_memory_summary(model)
                                 break
@@ -214,6 +222,7 @@ class ModelService:
                 self._apply_split_cfg(model)
                 self._instrument_model(model)
                 self._remember_audio_tokenizer_device(model)
+                self._ensure_audio_tokenizer_input_dtype(model)
                 self._offload_voice_encoder(model)
                 self._model = model
                 self._memory_summary = self._compute_model_memory_summary(model)
@@ -242,7 +251,7 @@ class ModelService:
             self._flashinfer_active = False
             return False
         try:
-            from ..vendor.omnivoice_flashinfer_012 import apply_flashinfer
+            from ..vendor.omnivoice_flashinfer_021 import apply_flashinfer
 
             apply_flashinfer(
                 model,
@@ -371,11 +380,13 @@ class ModelService:
             ):
                 return cached.prompt
 
+        source_sha256 = self._source_sha256(audio_path)
         disk_prompt = self._load_disk_prompt(
             ref_audio_path=ref_audio_path,
             ref_text=ref_text,
             audio_mtime_ns=stat.st_mtime_ns,
             audio_size=stat.st_size,
+            source_sha256=source_sha256,
         )
         if disk_prompt is not None:
             prompt = disk_prompt
@@ -386,6 +397,8 @@ class ModelService:
             with self._voice_encoder_lock:
                 self._restore_voice_encoder()
                 try:
+                    if prompt_ref_text is None:
+                        self._ensure_upstream_asr()
                     prompt = self.model.create_voice_clone_prompt(
                         ref_audio=ref_audio_path,
                         ref_text=prompt_ref_text,
@@ -399,6 +412,7 @@ class ModelService:
                 audio_mtime_ns=stat.st_mtime_ns,
                 audio_size=stat.st_size,
                 prompt=prompt,
+                source_sha256=source_sha256,
             )
 
         with self._prompt_cache_lock:
@@ -433,6 +447,8 @@ class ModelService:
                 }
                 if preprocess_prompt is not None:
                     kwargs["preprocess_prompt"] = preprocess_prompt
+                if ref_text is None:
+                    self._ensure_upstream_asr()
                 prompt = self.model.create_voice_clone_prompt(**kwargs)
             finally:
                 self._offload_voice_encoder()
@@ -507,6 +523,7 @@ class ModelService:
         ref_text: str | None,
         audio_mtime_ns: int,
         audio_size: int,
+        source_sha256: str | None = None,
     ):
         cache_path = self._prompt_cache_path(ref_audio_path)
         if not cache_path.is_file():
@@ -515,7 +532,11 @@ class ModelService:
             payload = torch.load(cache_path, map_location="cpu", weights_only=True)
             if not isinstance(payload, dict):
                 return None
-            cached_text = payload.get("ref_text")
+            is_native_prompt = (
+                payload.get("format_version") == 1
+                and torch.is_tensor(payload.get("ref_audio_tokens"))
+            )
+            cached_text = payload.get("source_ref_text", payload.get("ref_text"))
             has_source_metadata = "audio_mtime_ns" in payload and "audio_size" in payload
             if has_source_metadata:
                 if (
@@ -525,6 +546,9 @@ class ModelService:
                     return None
                 if cached_text != ref_text:
                     return None
+                cached_sha256 = payload.get("source_sha256")
+                if cached_sha256 is not None and source_sha256 != cached_sha256:
+                    return None
             else:
                 # Sonorus-compatible sidecars contain audio_codes, ref_rms, and
                 # ref_text. Reuse them only when newer than the source audio.
@@ -532,16 +556,33 @@ class ModelService:
                     return None
                 if ref_text is not None and cached_text != ref_text:
                     return None
-            tokens = payload.get("audio_codes", payload.get("ref_audio_tokens"))
+            expected_model = payload.get("server_model_fingerprint")
+            if expected_model is not None and expected_model != self._prompt_model_fingerprint():
+                return None
+            tokens = payload.get("ref_audio_tokens", payload.get("audio_codes"))
             if not torch.is_tensor(tokens) or tokens.ndim != 2 or tokens.numel() == 0:
                 return None
             from omnivoice.models.omnivoice import VoiceClonePrompt
 
-            return VoiceClonePrompt(
+            prompt = VoiceClonePrompt(
                 ref_audio_tokens=tokens.to("cpu"),
-                ref_text=str(payload.get("prompt_ref_text", cached_text)),
+                ref_text=str(
+                    payload.get("ref_text")
+                    if is_native_prompt
+                    else payload.get("prompt_ref_text", cached_text)
+                ),
                 ref_rms=float(payload["ref_rms"]),
             )
+            if not is_native_prompt or expected_model is None:
+                self._save_disk_prompt(
+                    ref_audio_path,
+                    ref_text,
+                    audio_mtime_ns,
+                    audio_size,
+                    prompt,
+                    source_sha256,
+                )
+            return prompt
         except Exception as exc:
             logger.warning("Ignoring invalid voice prompt cache %s: %s", cache_path, exc)
             return None
@@ -553,6 +594,7 @@ class ModelService:
         audio_mtime_ns: int,
         audio_size: int,
         prompt,
+        source_sha256: str | None = None,
     ) -> None:
         tokens = getattr(prompt, "ref_audio_tokens", None)
         if not torch.is_tensor(tokens):
@@ -562,12 +604,17 @@ class ModelService:
         try:
             torch.save(
                 {
+                    # This is a valid OmniVoice 0.2.1 VoiceClonePrompt payload.
+                    # The extra server fields are ignored by VoiceClonePrompt.load().
+                    "format_version": 1,
+                    "ref_audio_tokens": tokens.detach().to("cpu"),
+                    "ref_text": str(prompt.ref_text),
+                    "ref_rms": float(prompt.ref_rms),
+                    "source_ref_text": ref_text,
                     "audio_mtime_ns": audio_mtime_ns,
                     "audio_size": audio_size,
-                    "ref_text": ref_text,
-                    "prompt_ref_text": prompt.ref_text,
-                    "ref_rms": float(prompt.ref_rms),
-                    "audio_codes": tokens.detach().to("cpu"),
+                    "source_sha256": source_sha256,
+                    "server_model_fingerprint": self._prompt_model_fingerprint(),
                 },
                 temporary,
             )
@@ -594,6 +641,83 @@ class ModelService:
             ).device
         except StopIteration:
             model._omnivoice_server_audio_tokenizer_device = None
+
+    @staticmethod
+    def _ensure_audio_tokenizer_input_dtype(model) -> None:
+        """Align upstream's NumPy/Torch audio boundaries with the tokenizer dtype."""
+        tokenizer = getattr(model, "audio_tokenizer", None)
+        if tokenizer is None or getattr(tokenizer, "_omnivoice_server_dtype_wrapped", False):
+            return
+        encode = getattr(tokenizer, "encode", None)
+        if not callable(encode):
+            return
+
+        def wrapped_encode(input_values, *args, __encode=encode, **kwargs):
+            try:
+                parameter = next(tokenizer.parameters())
+            except StopIteration:
+                return __encode(input_values, *args, **kwargs)
+            if torch.is_tensor(input_values):
+                input_values = input_values.to(device=parameter.device, dtype=parameter.dtype)
+            return __encode(input_values, *args, **kwargs)
+
+        tokenizer.encode = wrapped_encode
+        decode = getattr(tokenizer, "decode", None)
+        if callable(decode):
+
+            def wrapped_decode(*args, __decode=decode, **kwargs):
+                result = __decode(*args, **kwargs)
+                audio_values = getattr(result, "audio_values", None)
+                # NumPy does not support bfloat16. OmniVoice 0.2.1 converts
+                # decoded output to NumPy in its post-processing path.
+                if torch.is_tensor(audio_values) and audio_values.dtype == torch.bfloat16:
+                    result.audio_values = audio_values.float()
+                return result
+
+            tokenizer.decode = wrapped_decode
+        tokenizer._omnivoice_server_dtype_wrapped = True
+
+    @staticmethod
+    def _source_sha256(path: Path) -> str | None:
+        try:
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+            return digest.hexdigest()
+        except OSError:
+            return None
+
+    def _prompt_model_fingerprint(self) -> str:
+        """Identify model/tokenizer layouts that can safely reuse prompt tokens."""
+        model = self._model
+        if model is None:
+            return "unloaded"
+        config = getattr(model, "config", None)
+        tokenizer = getattr(model, "audio_tokenizer", None)
+        tokenizer_config = getattr(tokenizer, "config", None)
+        material = "|".join(
+            [
+                str(self.cfg.model_id),
+                str(getattr(config, "model_type", "unknown")),
+                str(getattr(config, "num_audio_codebook", "unknown")),
+                str(getattr(tokenizer_config, "model_type", "unknown")),
+                str(getattr(tokenizer_config, "codebook_size", "unknown")),
+            ]
+        )
+        return hashlib.sha256(material.encode()).hexdigest()
+
+    def _ensure_upstream_asr(self) -> None:
+        """Lazily load OmniVoice's optional ASR on the configured device."""
+        if self.cfg.transcriber != "whisper" or getattr(self.model, "_asr_pipe", None):
+            return
+        model_name = self.cfg.asr_model_name
+        if "/" not in model_name:
+            model_name = f"openai/whisper-{model_name}"
+        device = self.cfg.asr_device
+        if device == "auto":
+            device = "cuda" if self.cfg.device == "cuda" else "cpu"
+        self.model.load_asr_model(model_name=model_name, device=device)
 
     @staticmethod
     def _supports_skip_encoder(omnivoice_cls) -> bool:

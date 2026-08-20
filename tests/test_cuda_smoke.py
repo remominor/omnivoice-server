@@ -23,7 +23,13 @@ import pytest
 
 RUN_SMOKE = os.getenv("OMNIVOICE_RUN_CUDA_SMOKE", "").lower() in {"1", "true", "yes"}
 MODE = os.getenv("OMNIVOICE_CUDA_SMOKE_MODE", "standard").lower()
-VALID_MODES = {"standard", "low-vram", "flashinfer", "flashinfer-graph"}
+VALID_MODES = {
+    "standard",
+    "low-vram",
+    "flashinfer",
+    "flashinfer-graph",
+    "low-vram-flashinfer",
+}
 
 
 @pytest.mark.skipif(not RUN_SMOKE, reason="set OMNIVOICE_RUN_CUDA_SMOKE=1 to run CUDA smoke")
@@ -37,13 +43,14 @@ def test_cuda_loader_option_and_generation() -> None:
     from omnivoice_server.config import Settings
     from omnivoice_server.services.model import ModelService
 
-    use_flashinfer = MODE in {"flashinfer", "flashinfer-graph"}
+    use_flashinfer = MODE in {"flashinfer", "flashinfer-graph", "low-vram-flashinfer"}
     use_graphs = MODE == "flashinfer-graph"
+    use_low_vram = MODE in {"low-vram", "low-vram-flashinfer"}
     cfg = Settings(
         device="cuda",
         num_step=int(os.getenv("OMNIVOICE_CUDA_SMOKE_STEPS", "8")),
         max_concurrent=1,
-        low_vram_mode=MODE == "low-vram",
+        low_vram_mode=use_low_vram,
         offload_voice_encoder=True,
         flashinfer_mode=use_flashinfer,
         flashinfer_cuda_graph=use_graphs,
@@ -56,7 +63,7 @@ def test_cuda_loader_option_and_generation() -> None:
     service._load_sync()
 
     assert service.is_loaded
-    if MODE == "low-vram":
+    if use_low_vram:
         assert service._low_vram_active, "low-VRAM loader silently fell back"
     else:
         assert not service._low_vram_active
@@ -103,8 +110,8 @@ def test_cuda_loader_option_and_generation() -> None:
             num_step=cfg.num_step,
         )
 
-    assert outputs and all(output.numel() > 0 for output in outputs)
-    if MODE == "low-vram":
+    assert outputs and all(_sample_count(output) > 0 for output in outputs)
+    if use_low_vram:
         tokenizer = model.audio_tokenizer
         encoder_names = ("semantic_model", "acoustic_encoder", "encoder_semantic", "fc", "fc1")
         assert all(getattr(tokenizer, name, None) is None for name in encoder_names)
@@ -126,3 +133,10 @@ def test_cuda_loader_option_and_generation() -> None:
     del outputs, service
     gc.collect()
     torch.cuda.empty_cache()
+
+
+def _sample_count(output) -> int:
+    """Support OmniVoice's 0.2.1 NumPy output contract and legacy tensors."""
+    if hasattr(output, "numel"):
+        return int(output.numel())
+    return int(output.size)

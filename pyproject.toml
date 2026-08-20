@@ -21,10 +21,10 @@ classifiers = [
 ]
 
 dependencies = [
-    # FIX: pin omnivoice to a compatible minor series.
-    # OmniVoice is brand-new (April 2026) and its API may change in 0.2.x.
-    # Widen this bound only after reviewing upstream changelogs.
-    "omnivoice>=0.1.0,<0.2.0",
+    # Low-VRAM and FlashInfer use guarded private APIs from this release.
+    "omnivoice==0.2.1",
+    "transformers==5.3.0",
+    "numpy<2.5; python_version >= '3.11'",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "python-multipart>=0.0.12",
@@ -40,6 +40,7 @@ dependencies = [
 formats = ["pydub>=0.25.0"]  # For mp3, opus, aac, flac support (also requires ffmpeg)
 flashinfer = ["flashinfer-python==0.6.15.post1"]
 asr = ["faster-whisper>=1.2.1"]
+text-normalization = ["num2words>=0.5.14", "wetextprocessing; platform_system == 'Linux'"]
 benchmark = ["psutil", "tqdm"]
 dev = [
     "pytest>=8.0.0",

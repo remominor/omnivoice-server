@@ -8,6 +8,7 @@ import io
 import os
 from unittest.mock import AsyncMock
 
+import pytest
 import torch
 
 from omnivoice_server.services.inference import SynthesisResult
@@ -230,3 +231,16 @@ def test_clone_audio_chunk_threshold_invalid(client, sample_audio_bytes):
         files={"ref_audio": ("ref.wav", io.BytesIO(sample_audio_bytes), "audio/wav")},
     )
     assert resp.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("normalize_text", "false"), ("pad_duration", "0.0"), ("fade_duration", "0.05")],
+)
+def test_clone_omnivoice_021_generation_fields(client, sample_audio_bytes, field, value):
+    resp = client.post(
+        "/v1/audio/speech/clone",
+        data={"text": "Hello", field: value},
+        files={"ref_audio": ("ref.wav", io.BytesIO(sample_audio_bytes), "audio/wav")},
+    )
+    assert resp.status_code == 200

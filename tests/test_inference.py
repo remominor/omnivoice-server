@@ -8,7 +8,7 @@ import torch
 from omnivoice.models.omnivoice import VoiceClonePrompt
 
 from omnivoice_server.config import Settings
-from omnivoice_server.services.inference import InferenceService, SynthesisRequest
+from omnivoice_server.services.inference import InferenceService, OmniVoiceAdapter, SynthesisRequest
 from omnivoice_server.services.model import ModelService
 
 
@@ -131,6 +131,12 @@ def test_voice_clone_prompt_persists_as_cpu_token_cache(tmp_path):
 
     cache_path = ref_audio_path.with_suffix(".tokens.pt")
     assert cache_path.is_file()
+    payload = torch.load(cache_path, map_location="cpu", weights_only=True)
+    assert payload["format_version"] == 1
+    assert "ref_audio_tokens" in payload
+    assert "source_sha256" in payload
+    native_prompt = VoiceClonePrompt.load(cache_path)
+    assert native_prompt.ref_text == "Reference transcript."
 
     second_cfg, second_model_svc = _make_model_service(tmp_path)
     second_model = PromptModel()
@@ -149,6 +155,23 @@ def test_voice_clone_prompt_persists_as_cpu_token_cache(tmp_path):
     assert second_model.prompt_calls == 0
     cached_prompt = second_model.generate_calls[0]["voice_clone_prompt"]
     assert cached_prompt.ref_audio_tokens.device.type == "cpu"
+
+
+def test_adapter_passes_omnivoice_021_generation_fields(tmp_path):
+    cfg, _ = _make_model_service(tmp_path)
+    kwargs = OmniVoiceAdapter(cfg).build_kwargs(
+        SynthesisRequest(
+            text="On 2026-08-20, the total was $23.50.",
+            mode="auto",
+            normalize_text=True,
+            pad_duration=0.0,
+            fade_duration=0.05,
+        ),
+        object(),
+    )
+    assert kwargs["normalize_text"] is True
+    assert kwargs["pad_duration"] == 0.0
+    assert kwargs["fade_duration"] == 0.05
 
 
 def test_cleanup_is_disabled_by_default(monkeypatch, tmp_path):

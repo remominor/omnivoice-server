@@ -766,6 +766,29 @@ def test_speech_audio_chunk_threshold(client, value, expected_status):
     assert resp.status_code == expected_status
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [("normalize_text", False), ("pad_duration", 0.0), ("fade_duration", 0.05)],
+)
+def test_speech_omnivoice_021_generation_fields(client, field, value):
+    resp = client.post("/v1/audio/speech", json={"input": "Hello", field: value})
+    assert resp.status_code == 200
+
+
+def test_normalize_text_reports_missing_english_dependency(monkeypatch):
+    from fastapi import HTTPException
+
+    from omnivoice_server.routers.speech import _ensure_text_normalization_available
+
+    def missing(_module):
+        raise ImportError("not installed")
+
+    monkeypatch.setattr("omnivoice_server.routers.speech.importlib.import_module", missing)
+    with pytest.raises(HTTPException, match="text-normalization") as exc:
+        _ensure_text_normalization_available("The price is $23.", "en", True)
+    assert exc.value.status_code == 422
+
+
 # ============================================================================
 # Instruction Validation Tests (Wave 1 - Task 2)
 # ============================================================================

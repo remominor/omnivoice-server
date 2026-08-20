@@ -118,14 +118,14 @@ class Settings(BaseSettings):
     low_vram_mode: bool = Field(
         default=False,
         description=(
-            "Opt in to the vendored OmniVoice 0.1.2 decoder-only tokenizer loader; "
+            "Opt in to the guarded OmniVoice 0.2.1 decoder-only tokenizer loader; "
             "incompatible models automatically use the standard loader."
         ),
     )
     flashinfer_mode: bool = Field(
         default=False,
         description=(
-            "Opt in to the vendored FlashInfer decoder patch; unavailable or incompatible "
+            "Opt in to the OmniVoice 0.2.1 FlashInfer decoder patch; unavailable or incompatible "
             "installations fall back to the standard OmniVoice forward path."
         ),
     )

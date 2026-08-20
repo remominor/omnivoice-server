@@ -63,12 +63,12 @@ def _generate_iterative_split(self, task, gen_config):
     tokens = torch.full(
         (task.batch_size, codebooks, max_u_len), pad_id, dtype=torch.long, device=self.device
     )
-    from .vendor.omnivoice_012 import _get_time_steps, _gumbel_sample
+    from omnivoice.models.omnivoice import _get_time_steps, _gumbel_sample
 
     schedule_steps = _get_time_steps(
         t_start=0.0,
         t_end=1.0,
-        num_step=gen_config.num_step + 1,
+        num_step=gen_config.num_step,
         t_shift=gen_config.t_shift,
     ).tolist()
     schedules = []

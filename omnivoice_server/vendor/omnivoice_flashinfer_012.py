@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""FlashInfer-accelerated iterative decoding for OmniVoice.
+"""FlashInfer-accelerated iterative decoding for OmniVoice 0.2.1.
 
 Approach (mirrors CosyVoice/runtime/triton_trtllm/token2wav_dit_flashinfer.py):
 
@@ -22,7 +22,7 @@ Approach (mirrors CosyVoice/runtime/triton_trtllm/token2wav_dit_flashinfer.py):
   plan bakes its launch metadata into the captured graph.
 
 Usage:
-    from omnivoice_flashinfer import apply_flashinfer
+    from omnivoice_server.vendor.omnivoice_flashinfer_021 import apply_flashinfer
     apply_flashinfer(model, enable_cuda_graph=True)
 """
 
@@ -38,7 +38,7 @@ import torch
 import torch.nn.functional as F
 from transformers.modeling_utils import AttentionInterface
 
-from .omnivoice_012 import (
+from omnivoice.models.omnivoice import (
     GenerationTask,
     OmniVoiceGenerationConfig,
     _get_time_steps,
@@ -671,6 +671,9 @@ def apply_flashinfer(
     cuda_graph_max_shapes: int = _DEFAULT_GRAPH_CACHE_MAX_SHAPES,
 ):
     """Patch an OmniVoice instance to use flashinfer packed attention."""
+    from ..omnivoice_compat import require_flashinfer_compatibility
+
+    require_flashinfer_compatibility(model)
     model.llm.set_attn_implementation("omnivoice_fi")
     if fuse_rmsnorm:
         _patch_rmsnorm(model.llm)

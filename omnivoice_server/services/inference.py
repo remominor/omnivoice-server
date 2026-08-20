@@ -50,6 +50,9 @@ class SynthesisRequest:
     postprocess_output: bool | None = None
     audio_chunk_duration: float | None = None
     audio_chunk_threshold: float | None = None
+    normalize_text: bool | None = None
+    pad_duration: float | None = None
+    fade_duration: float | None = None
 
 
 @dataclass
@@ -193,6 +196,12 @@ class OmniVoiceAdapter:
             kwargs["audio_chunk_duration"] = req.audio_chunk_duration
         if req.audio_chunk_threshold is not None:
             kwargs["audio_chunk_threshold"] = req.audio_chunk_threshold
+        if req.normalize_text is not None:
+            kwargs["normalize_text"] = req.normalize_text
+        if req.pad_duration is not None:
+            kwargs["pad_duration"] = req.pad_duration
+        if req.fade_duration is not None:
+            kwargs["fade_duration"] = req.fade_duration
 
         if req.mode == "design" and req.instruct:
             kwargs["instruct"] = req.instruct

@@ -12,9 +12,10 @@ iterative generation, voice conditioning, chunk continuity, and postprocessing.
 Ideas that rely on Echo-TTS's autoregressive/blockwise architecture are excluded
 unless OmniVoice later exposes an upstream API that makes them safe.
 
-This plan targets the Python server and the currently supported OmniVoice 0.1.x
-model family. The vendored implementation is pinned to 0.1.2 for low-VRAM and
-FlashInfer compatibility; the normal loader remains the default.
+This plan targets the Python server and OmniVoice 0.2.1. The standard loader
+remains the default; low-VRAM and FlashInfer are guarded private integrations
+that disable themselves when the installed runtime layout is not the supported
+one.
 
 ## Architecture Findings
 

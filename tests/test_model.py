@@ -11,6 +11,35 @@ from torch import nn
 from omnivoice_server.services.model import ModelService
 
 
+def test_private_omnivoice_021_compatibility_guard_accepts_pinned_runtime():
+    from omnivoice_server.omnivoice_compat import (
+        SUPPORTED_OMNIVOICE_VERSION,
+        installed_version,
+        require_private_compatibility,
+    )
+
+    assert installed_version() == SUPPORTED_OMNIVOICE_VERSION
+    require_private_compatibility()
+
+
+def test_audio_tokenizer_boundary_wrapper_converts_bfloat16_decode_output(tmp_path):
+    class Tokenizer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.ones(1, dtype=torch.bfloat16))
+
+        def encode(self, values):
+            return values
+
+        def decode(self, _tokens):
+            return SimpleNamespace(audio_values=torch.ones(1, 4, dtype=torch.bfloat16))
+
+    model = SimpleNamespace(audio_tokenizer=Tokenizer())
+    ModelService._ensure_audio_tokenizer_input_dtype(model)
+    assert model.audio_tokenizer.encode(torch.ones(1, dtype=torch.float32)).dtype == torch.bfloat16
+    assert model.audio_tokenizer.decode(torch.zeros(1)).audio_values.dtype == torch.float32
+
+
 def test_modelservice_has_nan_handles_numpy_array_direct():
     arr = np.array([0.0, 1.0, np.nan], dtype=np.float32)
     assert ModelService._has_nan(arr) is True

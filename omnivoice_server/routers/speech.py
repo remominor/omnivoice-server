@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import importlib
 import ipaddress
 import json
 import logging
@@ -95,6 +96,12 @@ class SpeechRequest(BaseModel):
     postprocess_output: bool | None = Field(default=None)
     audio_chunk_duration: float | None = Field(default=None, gt=0.0)
     audio_chunk_threshold: float | None = Field(default=None, gt=0.0)
+    normalize_text: bool | None = Field(
+        default=None,
+        description="Apply optional upstream text normalization before synthesis",
+    )
+    pad_duration: float | None = Field(default=None, ge=0.0, le=2.0)
+    fade_duration: float | None = Field(default=None, ge=0.0, le=2.0)
     request_timeout_s: int | None = Field(default=None, ge=1, le=600)
 
     @field_validator("model")
@@ -123,6 +130,33 @@ def _get_inference(request: Request) -> InferenceService:
 
 def _get_profiles(request: Request) -> ProfileService:
     return request.app.state.profile_svc
+
+
+def _ensure_text_normalization_available(
+    text: str, language: str | None, enabled: bool | None
+) -> None:
+    """Fail before streaming headers when English/Chinese TN support is absent."""
+    if not enabled:
+        return
+    code = (language or "").strip().lower()
+    if not code:
+        code = "zh" if any("\u4e00" <= char <= "\u9fff" for char in text) else "en"
+    if code in {"english", "en"}:
+        module = "tn.english.normalizer"
+    elif code in {"chinese", "zh"}:
+        module = "tn.chinese.normalizer"
+    else:
+        return
+    try:
+        importlib.import_module(module)
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "normalize_text=true for English/Chinese requires "
+                "the text-normalization extra: pip install 'omnivoice-server[text-normalization]'"
+            ),
+        ) from exc
 
 
 def _get_metrics(request: Request) -> MetricsService:
@@ -526,6 +560,7 @@ async def create_speech(
     cfg=Depends(_get_cfg),
 ):
     """Generate speech from text."""
+    _ensure_text_normalization_available(body.input, body.language, body.normalize_text)
     mode, instruct, ref_audio_path, ref_text = _resolve_synthesis_mode(body, profile_svc)
     wants_stream = body.stream or cfg.stream or body.stream_format == "sse"
     forced_stream = cfg.stream and not body.stream and body.stream_format is None
@@ -587,6 +622,9 @@ async def create_speech(
         postprocess_output=body.postprocess_output,
         audio_chunk_duration=body.audio_chunk_duration,
         audio_chunk_threshold=body.audio_chunk_threshold,
+        normalize_text=body.normalize_text,
+        pad_duration=body.pad_duration,
+        fade_duration=body.fade_duration,
     )
 
     if wants_stream:
@@ -694,6 +732,9 @@ def _chunk_request(sentence: str, base_req: SynthesisRequest) -> SynthesisReques
         postprocess_output=base_req.postprocess_output,
         audio_chunk_duration=base_req.audio_chunk_duration,
         audio_chunk_threshold=base_req.audio_chunk_threshold,
+        normalize_text=base_req.normalize_text,
+        pad_duration=base_req.pad_duration,
+        fade_duration=base_req.fade_duration,
     )
 
 
@@ -1110,6 +1151,9 @@ async def create_speech_clone(
     postprocess_output: bool | None = Form(default=None),
     audio_chunk_duration: float | None = Form(default=None, gt=0.0),
     audio_chunk_threshold: float | None = Form(default=None, gt=0.0),
+    normalize_text: bool | None = Form(default=None),
+    pad_duration: float | None = Form(default=None, ge=0.0, le=2.0),
+    fade_duration: float | None = Form(default=None, ge=0.0, le=2.0),
     request_timeout_s: int | None = Form(default=None, ge=1, le=600),
     inference_svc: InferenceService = Depends(_get_inference),
     metrics_svc: MetricsService = Depends(_get_metrics),
@@ -1121,6 +1165,7 @@ async def create_speech_clone(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="text cannot be blank",
         )
+    _ensure_text_normalization_available(text, language, normalize_text)
 
     # Fail-fast: reject oversized uploads before reading body
     content_length = request.headers.get("content-length")
@@ -1172,6 +1217,9 @@ async def create_speech_clone(
             postprocess_output=postprocess_output,
             audio_chunk_duration=audio_chunk_duration,
             audio_chunk_threshold=audio_chunk_threshold,
+            normalize_text=normalize_text,
+            pad_duration=pad_duration,
+            fade_duration=fade_duration,
         )
 
     if stream or cfg.stream:
