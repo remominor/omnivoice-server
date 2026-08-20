@@ -663,8 +663,13 @@ class OmniVoice(PreTrainedModel):
         chunk_size = self.audio_tokenizer.config.hop_length
         clip_size = int(ref_wav.size(-1) % chunk_size)
         ref_wav = ref_wav[:, :-clip_size] if clip_size > 0 else ref_wav
+        tokenizer_device = self.audio_tokenizer.device
+        try:
+            tokenizer_dtype = next(self.audio_tokenizer.parameters()).dtype
+        except StopIteration:
+            tokenizer_dtype = ref_wav.dtype
         ref_audio_tokens = self.audio_tokenizer.encode(
-            ref_wav.unsqueeze(0).to(self.audio_tokenizer.device),
+            ref_wav.unsqueeze(0).to(device=tokenizer_device, dtype=tokenizer_dtype),
         ).audio_codes.squeeze(
             0
         )  # (C, T)
@@ -730,6 +735,10 @@ class OmniVoice(PreTrainedModel):
         Returns:
             Processed audio tensor of shape (1, T).
         """
+        # NumPy/pydub do not support CUDA-produced BF16 tensors. Keep model
+        # inference in the selected dtype, but use FP32 at the audio boundary.
+        if generated_audio.dtype in (torch.float16, torch.bfloat16):
+            generated_audio = generated_audio.float()
         if postprocess_output:
             generated_audio = remove_silence(
                 generated_audio,
