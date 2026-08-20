@@ -14,8 +14,8 @@ Primary question:
 ## Opt-in Python low-VRAM mode
 
 Set `OMNIVOICE_LOW_VRAM_MODE=true`, `--low-vram`, or `low_vram_mode=True` to
-use the vendored OmniVoice 0.1.2 loader. The setting is default-off. The normal
-OmniVoice loader remains the compatibility path.
+use the guarded OmniVoice 0.2.1 decoder-only tokenizer loader. The setting is
+default-off. The normal OmniVoice loader remains the compatibility path.
 
 At startup, the main model is loaded in the requested FP16/BF16 mode and the
 audio tokenizer is constructed from its config. Only `audio_tokenizer/model.safetensors`
@@ -30,7 +30,8 @@ For a cold reference, the existing encoder lock protects a short lifecycle:
    Safetensors keys.
 2. Move them to the tokenizer device and encode the reference.
 3. Move reusable prompt tensors to CPU and atomically write the `.tokens.pt`
-   sidecar containing audio codes, RMS, transcript, source mtime, and size.
+   sidecar in OmniVoice 0.2.1 `VoiceClonePrompt` format, extended with the
+   source fingerprint and model/tokenizer compatibility metadata.
 4. Remove the encoder modules, run garbage collection, and clear CUDA's cache.
 
 A warm in-memory or valid disk sidecar hit never reconstructs the encoder. A
@@ -55,19 +56,19 @@ layouts, tokenizer API changes, or generation incompatibilities are logged and
 fall back to the standard OmniVoice loader. Profile cloning, one-shot cloning,
 streaming, and profile invalidation use the same server API in either mode.
 
-The implementation is Python-only. It vendors the pinned OmniVoice 0.1.2 model
-source and Apache license notice under `omnivoice_server/vendor/`; it does not
-use or reproduce the separate Sonorus GGUF/Vulkan architecture. Sonorus's
-implementation motivated the lifecycle (decoder resident, encoder on demand,
-CPU token sidecars), while this server retains its existing prompt format and
-standard-loader fallback.
+The implementation is Python-only. It uses the installed, pinned OmniVoice
+0.2.1 model and keeps a guarded private FlashInfer patch under
+`omnivoice_server/vendor/`; it does not use or reproduce the separate Sonorus
+GGUF/Vulkan architecture. Sonorus's implementation motivated the lifecycle
+(decoder resident, encoder on demand, CPU token sidecars), while this server
+retains atomic prompt persistence and standard-loader fallback.
 
 ## Current Measured Footprint
 
 ## FlashInfer on an RTX 3070
 
-The server now includes an opt-in FlashInfer path based on upstream OmniVoice's
-July 2026 patch. Install the matching CUDA package separately, for example for
+The server includes an opt-in FlashInfer path rebased for OmniVoice 0.2.1.
+Install the matching CUDA package separately, for example for
 the repository's CUDA 12.8 PyTorch build:
 
 ```bash
@@ -174,9 +175,10 @@ uv run pytest -q -s tests/test_cuda_smoke.py
 ```
 
 Supported `OMNIVOICE_CUDA_SMOKE_MODE` values are `standard`, `low-vram`,
-`flashinfer`, and `flashinfer-graph`. The test prints allocated/reserved/peak
-VRAM and graph-cache entries. FlashInfer modes require the optional FlashInfer
-dependencies; graph mode additionally requires a compatible JIT compiler.
+`flashinfer`, `flashinfer-graph`, and `low-vram-flashinfer`. The test prints
+allocated/reserved/peak VRAM and graph-cache entries. FlashInfer modes require
+the optional FlashInfer dependencies; graph mode additionally requires a
+compatible JIT compiler.
 
 To exercise a cold custom-voice reference, provide real speech and its exact
 transcript rather than the bundled test tone:
@@ -204,6 +206,14 @@ uv run pytest -q -s tests/test_cuda_smoke.py
 
 This warm-sidecar case does not load the reference encoder. It is the correct
 case for comparing steady-state standard and low-VRAM clone generation.
+
+### OmniVoice 0.2.1 generation controls
+
+The API exposes the upstream opt-in `normalize_text`, `pad_duration`, and
+`fade_duration` controls for JSON and one-shot clone requests. Text
+normalization is disabled by default and requires the optional
+`omnivoice-server[text-normalization]` extra. Padding and fading are passed to
+OmniVoice unchanged; they do not change the server's PCM streaming contract.
 
 Run each mode in a fresh process. This prevents one loaded model or CUDA graph
 pool from affecting the next mode's measurements.

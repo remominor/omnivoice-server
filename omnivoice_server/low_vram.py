@@ -1,4 +1,4 @@
-"""Pinned OmniVoice 0.1.2 loader for the opt-in low-VRAM path.
+"""OmniVoice 0.2.1 loader for the opt-in low-VRAM path.
 
 This module deliberately keeps the compatibility surface small.  The normal
 OmniVoice loader remains the default; callers can treat any exception here as
@@ -15,7 +15,7 @@ from typing import Any
 
 import torch
 
-from .vendor.omnivoice_012 import OmniVoice
+from .omnivoice_compat import require_private_compatibility
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ def _make_tokenizer(tokenizer_path: str, device: str, dtype: torch.dtype):
     allowed_missing = [key for key in missing if _is_encoder_key(key)]
     if unexpected or len(allowed_missing) != len(missing):
         raise RuntimeError(
-            "selective tokenizer weights do not match OmniVoice 0.1.2: "
+            "selective tokenizer weights do not match OmniVoice 0.2.1: "
             f"missing={missing[:4]}, unexpected={unexpected[:4]}"
         )
     for name in ENCODER_MODULES:
@@ -81,6 +81,9 @@ def _make_tokenizer(tokenizer_path: str, device: str, dtype: torch.dtype):
 
 def load(model_id: str, *, device_map: str, dtype: torch.dtype, cache_dir: Path | None = None):
     """Load the main model and a decoder-only audio tokenizer."""
+    require_private_compatibility()
+    from omnivoice.models.omnivoice import OmniVoice
+
     model_path = _resolve_model_path(model_id, cache_dir)
     tokenizer_path = _tokenizer_path(model_path)
     model = OmniVoice.from_pretrained(
